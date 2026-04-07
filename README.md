@@ -1,0 +1,2 @@
+# ModellingBiologicalHeterogeneityPlayground
+Initial code for exploring biological heterogeneity
