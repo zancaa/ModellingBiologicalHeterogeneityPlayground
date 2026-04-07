@@ -1,0 +1,265 @@
+using Catalyst, OrdinaryDiffEqDefault, CairoMakie, BifurcationKit, DynamicalSystems, OrdinaryDiffEqTsit5
+
+# Function for the cross-inhibition terms
+cross_inhibition(G, P, b, θb, m) = b * (θb^m)/(θb^m + G^m*P^m)
+
+##################### Full model - not yet explored ###########################
+# Create model
+rn = @reaction_network begin
+	hill(G, a1, θa1, n), ∅ --> G
+	hill(P, a2, θa2, n), ∅ --> P
+	cross_inhibition(G, P, b1, θb1, m), ∅ --> G
+	cross_inhibition(G, P, b2, θb2, m), ∅ --> P
+	k1, G --> ∅
+	k2, P --> ∅
+end
+
+# Set initial conditions, time span and parameter values
+u0 = [:G => 0.8, :P => 0.4]
+tspan = (0.0, 50.0)
+ps = [:a1 => 1.0, :θa1 => 0.5, :n => 4, :a2 => 1.0, :θa2 => 0.5, :b1 => 1, :θb1 => 0.07,
+	 :b2 => 1, :θb2 => 0.07, :m => 1, :k1 => 1, :k2 => 1]
+
+# Sample solutions
+oprob = ODEProblem(rn, u0, tspan, ps)
+sol = solve(oprob)
+
+# Bifurcation diagram
+bif_par = :a1
+u_guess = [:G => 0.8, :P => 0.4]
+p_start = [:a1 => 0.5, :θa1 => 0.5, :n => 4, :a2 => 1.0, :θa2 => 0.5, :b1 => 1, :θb1 => 0.07,
+	 :b2 => 1, :θb2 => 0.07, :m => 1, :k1 => 1, :k2 => 1]
+plot_var = :G
+bprob = BifurcationProblem(rn, u_guess, p_start, bif_par; plot_var)
+p_span = (0.4, 1.2)
+opts_br = ContinuationPar(p_min = p_span[1], p_max = p_span[2])
+br = continuation(bprob, PALC(), opts_br)
+bif_dia = bifurcationdiagram(bprob, PALC(), 2, opts_br; bothside = true)
+
+##################### Simplified model (as per Duff et al.) #####################################################
+
+# Create simplified model
+simplified_rn = @reaction_network begin
+	hill(X, a, θ1, n), ∅ --> X
+	hill(Y, a, θ1, n), ∅ --> Y
+	cross_inhibition(X, Y, b, θ2, m), ∅ --> X
+	cross_inhibition(X, Y, b, θ2, m), ∅ --> Y
+	k, X --> ∅
+	k, Y --> ∅
+end
+
+u0 = [:X => 0.8, :Y => 0.4]
+tspan = (0.0, 20.0)
+ps = [:a => 1.0, :θ1 => 0.5, :n => 4, :b => 1, :θ2 => 0.07, :m => 1, :k => 1]
+
+# Sample solutions
+oprob = ODEProblem(simplified_rn, u0, tspan, ps)
+sol = solve(oprob)
+
+## Fig 1: Bifurcation diagram
+# Bifurcation diagram
+bif_par = :a
+u_guess = [:X => 0.8, :Y => 0.4]
+p_start = [:a => 0.4, :θ1 => 0.5, :n => 4, :b => 1, :θ2 => 0.07, :m => 1, :k => 1]
+plot_var = :X
+bprob = BifurcationProblem(simplified_rn, u_guess, p_start, bif_par; plot_var)
+p_span = (0.4, 1.2)
+opts_br = ContinuationPar(p_min = p_span[1], p_max = p_span[2],
+	ds = 0.05, dsmax = 0.1,
+    detect_bifurcation = 3,             # full bifurcation detection
+    newton_options = NewtonPar(tol = 1e-10))
+
+# The below variable only works plotting-wise with Plots.jl, but even then, the results aren't great
+bif_dia = bifurcationdiagram(bprob, PALC(), 2, opts_br; bothside = true)
+
+# The plotting code using Plots.jl - ignore
+# f = Plots.plot(bif_dia; putspecialptlegend = false,
+#                        markersize=2,
+#                        plotfold=false,
+#                        title = "#branches = $(size(bif_dia))")
+# display("image/svg+xml", f)
+
+# To plot using CairoMakie
+# Function to extract all branches from the bifurcationdiagram
+function collect_branches(node, acc = [])
+    push!(acc, node.γ)
+    for child in node.child
+        collect_branches(child, acc)
+    end
+    return acc
+end
+
+all_branches = collect_branches(bif_dia)
+
+# Plot bifurcation diagram (to check it matches Duff et al 2012 - it does)
+fig1 = Figure(size = (800, 500))
+ax1 = Axis(fig1[1, 1],
+    xlabel = "a",
+    ylabel = "G"
+)
+
+col_stable   = :royalblue
+col_unstable = :tomato
+
+# Plotting whole branches is a bit of a faff, just plot calculated points for now
+function plot_branch!(ax, br, color_s, color_u)
+    a = getproperty.(br.branch, :param)      # parameter values (in this case, a)
+    G = getproperty.(br.branch, :x)          # values for G (or whatever is being calculated)
+    stable = br.stable                       # stability of point
+
+	for i in 1:length(a)
+		col = stable[i] ? color_s : color_u
+		scatter!(ax, a[i], G[i], color = col, markersize=10)
+	end
+
+end
+
+for br in all_branches
+    plot_branch!(ax1, br, col_stable, col_unstable)
+end
+
+# Mark special points: there seem to be six? Really?... Should ckeck!
+for br in all_branches
+    for sp in br.specialpoint
+        sp.type ∈ (:bp, :lp, :hopf) || continue
+        scatter!(ax1, [sp.param], [sp.x[1]]; color = :black, marker = :diamond, markersize = 14)
+    end
+end
+
+Legend(fig1[1, 2], [
+    MarkerElement(color = col_stable, marker = :circle, markersize = 10),
+    MarkerElement(color = col_unstable, marker = :circle, markersize = 10),
+    MarkerElement(color = :black, marker = :diamond, markersize = 14),
+], ["Stable", "Unstable", "Bifurcation point"])
+
+display("image/svg+xml", fig1)
+
+# Exploring the dynamics for different regions of parameter space
+# (one parameter only so far, will need to generalise)
+# How can the (qualitative?) difference be described and used to
+# inform the search through parameter space?
+
+# Fig 2: Basins of attracion, streamplot, and attractors
+fig2 = Figure()
+ax2  = Axis(fig2[1, 1],
+    xlabel = "G",
+    ylabel = "P"
+)
+
+# Plot basins of attraction
+ds = CoupledODEs(oprob, (alg = Tsit5(),))
+x_grid = 0.0:0.02:2.0
+y_grid = 0.0:0.02:2.0
+grid = (x_grid, y_grid)
+avr = AttractorsViaRecurrences(ds, grid)
+basins, attractors = basins_of_attraction(avr, grid; show_progress = false)
+
+
+# Below line does not work with overlaying streamplot
+# heatmap_basins_attractors(grid, basins, attractors)
+
+# Instead,
+heatmap!(ax2, x_grid, y_grid, basins')
+
+# Do some stuff to plot streamplots (following Makie documentation)
+struct Duff{T}
+    a::T
+    b::T
+	θ1::T
+    θ2::T
+	n::T
+	m::T
+	k::T
+end
+
+P = Duff(1.0, 1.0, 0.5, 0.07, 4.0, 1.0, 1.0)
+
+f(x, P::Duff) = Point2f(
+    (P.a*x[1]^P.n/(P.θ1^P.n + x[1]^P.n) + P.b*P.θ2^P.m/(P.θ2^P.m + x[1]^P.m*x[2]^P.m) - P.k*x[1]),
+    (P.a*x[2]^P.n/(P.θ1^P.n + x[2]^P.n) + P.b*P.θ2^P.m/(P.θ2^P.m + x[1]^P.m*x[2]^P.m) - P.k*x[2])
+)
+
+f(x) = f(x, P)
+
+streamplot!(ax2, f, 0.0:0.02:2.0, 0.0:0.02:2.0, colormap = :magma)
+
+# Plot attractors on top
+for att in values(attractors)
+	# Use different markers, to match the default basins plot
+	if (att[:,1][1] > 1) && (att[:,2][1] > 1)
+		markershape = :circle
+	elseif  (att[:,1][1] > 1) && (att[:,2][1] < 1)
+		markershape = :dtriangle
+	elseif (att[:,1][1] < 1) && (att[:,2][1] > 1)
+		markershape = :rect
+	end
+    scatter!(ax2, att[:,1], att[:,2];
+        strokecolor = :white,
+		strokewidth = 2,
+		color = :transparent,
+        markersize = 12,
+		marker = markershape
+    )
+end
+display("image/svg+xml", fig2)
+
+### Fig 3: Plotting basins of attraction, streamplots and attractors for a (naïve) parameter sweep
+
+# Plot a grid of phase portraits with basins of attraction 
+# for different values of a and b (should do a similar thing for thetas)
+a = 0.4:0.2:1.0
+b = 0.6:0.2:1.2
+θ1 = 
+
+# Set up the figure, panels will be set by axes
+fig3 = Figure()
+
+# Bad looping!
+for i in eachindex(a)
+	for j in eachindex(b)
+		ax3 = Axis(fig3[i, j],
+    		xlabel = "G",
+    		ylabel = "P"
+			#title = "a = $(a[i]), b = $(b[j])"
+		)
+		ps = [:a => a[i], :θ1 => 0.5, :n => 4, :b => b[j], :θ2 => 0.07, :m => 1, :k => 1]
+		# Plot basin of attraction first
+		oprob = ODEProblem(simplified_rn, u0, tspan, ps)
+		ds = CoupledODEs(oprob, (alg = Tsit5(),))
+		x_grid = 0.0:0.02:2.0
+		y_grid = 0.0:0.02:2.0
+		grid = (x_grid, y_grid)
+		avr = AttractorsViaRecurrences(ds, grid)
+		basins, attractors = basins_of_attraction(avr, grid; show_progress = false)
+		heatmap!(ax3, x_grid, y_grid, basins')
+
+		# Overlay streamplot - coded badly
+		P = Duff(a[i], b[j], 0.5, 0.07, 4.0, 1.0, 1.0)
+		f(x, P::Duff) = Point2f(
+    		(P.a*x[1]^P.n/(P.θ1^P.n + x[1]^P.n) + P.b*P.θ2^P.m/(P.θ2^P.m + x[1]^P.m*x[2]^P.m) - P.k*x[1]),
+    		(P.a*x[2]^P.n/(P.θ1^P.n + x[2]^P.n) + P.b*P.θ2^P.m/(P.θ2^P.m + x[1]^P.m*x[2]^P.m) - P.k*x[2])
+		)
+
+		f(x) = f(x, P)
+		streamplot!(ax3, f, 0.0:0.2:2.0, 0.0:0.2:2.0, colormap = :magma, arrow_size = 3, linewidth = 0.2)
+
+		# Finally, plot attractors (assuming these are not cycles)
+		for att in values(attractors)
+			scatter!(ax3, att[:,1], att[:,2];
+				strokecolor = :white,
+				strokewidth = 1,
+				color = :transparent,
+				markersize = 5
+			)
+		end
+	end
+end
+
+# Don't need this - delete later
+# function duff_simplified(u, p, t)
+# 	G, P = u # state
+# 	a, b, θ1, θ2, n, m, k = p # parameters
+# 	dG = a*G^n/(θ1^n + G^n) + b*θ2^m/(θ2^m + G^m*P^m) - k*G
+# 	dP = a*P^n/(θ1^n + P^n) + b*θ2^m/(θ2^m + G^m*P^m) - k*P
+# 	return SVector(dG, dP)
+# end
